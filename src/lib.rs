@@ -15,7 +15,7 @@ use sha2::Digest;
 #[derive(Debug)]
 pub struct TangyLib {
     keys: std::collections::HashMap<String, MyJwkEcKey>,
-    signing_key: MyJwkEcKey,
+    signing_keys: Vec<MyJwkEcKey>,
 }
 
 #[derive(PartialEq)]
@@ -72,16 +72,19 @@ impl TangyLib {
         // Extract a signing key from the JWK, it shouldn't really be generated using a
         // from_bytes call from the secret key... perhaps the SigningKey From trait is
         // missing for the secret key.
-        let signing_key = loaded_keys.iter().find_map(|(_, v)| {
-            if let Some(alg) = v.alg.as_ref() {
-                if alg == "ES512" {
-                    return Some(v.clone());
+        let signing_keys: Vec<MyJwkEcKey> = loaded_keys
+            .iter()
+            .filter_map(|(_, v)| {
+                if let Some(alg) = v.alg.as_ref() {
+                    if alg == "ES512" {
+                        return Some(v.clone());
+                    }
                 }
-            }
-            None
-        });
+                None
+            })
+            .collect();
 
-        if signing_key.is_none() {
+        if signing_keys.is_empty() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Signing key not found",
@@ -90,16 +93,25 @@ impl TangyLib {
 
         Ok(Self {
             keys: loaded_keys,
-            signing_key: signing_key.unwrap(),
+            signing_keys: signing_keys,
         })
     }
 
-    pub fn adv(&mut self, kid: Option<&str>) -> String {
+    pub fn adv(&mut self, skid: Option<&str>) -> Result<String, std::io::Error> {
+        #[derive(serde::Serialize)]
+        struct Siguature {
+            protected: String,
+            signature: String,
+        }
         #[derive(serde::Serialize)]
         struct Advertise {
             payload: String,
-            protected: String,
-            signature: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            protected: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            signature: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            signatures: Option<Vec<Siguature>>,
         }
 
         #[derive(serde::Serialize)]
@@ -107,15 +119,38 @@ impl TangyLib {
             keys: Vec<MyJwkEcKey>,
         }
 
-        let keys = if let Some(kid) = kid {
+        let keys: Vec<&MyJwkEcKey> = self.keys.values().collect();
+
+        let signing_keys = if let Some(kid) = skid {
             let key = self.keys.get(kid);
             if key.is_none() {
-                Vec::new()
-            } else {
-                vec![key.unwrap()]
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Requested signing key {} not found", kid),
+                ));
             }
+            if key.unwrap().key_ops.is_none() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Requested signing key {} cannot be used for signing", kid),
+                ));
+            }
+            if !key
+                .as_ref()
+                .unwrap()
+                .key_ops
+                .as_ref()
+                .unwrap()
+                .contains(&"sign".to_string())
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Requested signing key {} cannot be used for signing", kid),
+                ));
+            }
+            vec![key.unwrap().clone()]
         } else {
-            self.keys.values().collect()
+            self.signing_keys.iter().map(|v| v.clone()).collect()
         };
 
         let payload = base64ct::Base64Url::encode_string(
@@ -142,34 +177,64 @@ impl TangyLib {
             r#"{"alg":"ES512","cty":"jwk-set+json"}"#.as_bytes(),
         );
 
-        let mut signing_key = SigningKey::from_bytes(
-            &self
-                .signing_key
-                .to_jwk_ec_key(false)
-                .to_secret_key::<p521::NistP521>()
+        let mut signing_keys: Vec<SigningKey> = signing_keys
+            .iter()
+            .map(|k| {
+                SigningKey::from_bytes(
+                    &k.to_jwk_ec_key(false)
+                        .to_secret_key::<p521::NistP521>()
+                        .unwrap()
+                        .to_bytes(),
+                )
                 .unwrap()
-                .to_bytes(),
-        )
-        .unwrap();
+            })
+            .collect();
 
         // The protected and payload fields are signed, as base64url encoded string
         // joined with a period.
         let to_sign = format!("{}.{}", &protected, &payload);
 
-        let signature = ecdsa::signature::SignerMut::sign(&mut signing_key, to_sign.as_bytes());
+        let signatures: Vec<_> = signing_keys
+            .iter_mut()
+            .map(|k| ecdsa::signature::SignerMut::sign(k, to_sign.as_bytes()))
+            .collect();
 
         let mut buf = [0; 1024];
-        serde_json::to_string(&Advertise {
-            payload,
-            protected,
-            signature: base64ct::Base64Url::encode(&signature.to_bytes(), &mut buf)
-                .unwrap()
-                .to_string(),
-        })
-        .unwrap()
+
+        if signatures.len() == 1 {
+            Ok(serde_json::to_string(&Advertise {
+                payload,
+                protected: Some(protected),
+                signature: Some(
+                    base64ct::Base64Url::encode(&signatures[0].to_bytes(), &mut buf)
+                        .unwrap()
+                        .to_string(),
+                ),
+                signatures: None,
+            })
+            .unwrap())
+        } else {
+            Ok(serde_json::to_string(&Advertise {
+                payload,
+                protected: None,
+                signature: None,
+                signatures: Some(
+                    signatures
+                        .iter()
+                        .map(|s| Siguature {
+                            protected: protected.to_owned(),
+                            signature: base64ct::Base64Url::encode(&s.to_bytes(), &mut buf)
+                                .unwrap()
+                                .to_string(),
+                        })
+                        .collect(),
+                ),
+            })
+            .unwrap())
+        }
     }
 
-    pub fn rec(&self, kid: &str, request: &str) -> Result<String, String> {
+    pub fn rec(&self, kid: &str, request: &str) -> Result<String, std::io::Error> {
         let key = self.keys.iter().find_map(|(k, v)| {
             if k == kid {
                 return Some(v);
@@ -178,8 +243,10 @@ impl TangyLib {
         });
 
         if key.is_none() {
-            println!("Key missmatch");
-            return Err("".into());
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Requested key not found".to_string(),
+            ));
         }
 
         let request_key: MyJwkEcKey = serde_json::from_str(request).unwrap();
@@ -537,7 +604,7 @@ mod tests {
     fn adv() {
         let v = vec![JWK_ES512, JWK_ECMR];
         let mut t = TangyLib::init(KeySource::Vector(&v)).unwrap();
-        let advertisment = t.adv(None);
+        let advertisment = t.adv(None).unwrap();
 
         #[derive(Deserialize)]
         struct Adv {
@@ -564,12 +631,11 @@ mod tests {
     }
 
     #[test]
-    fn adv_kid() {
+    fn adv_skid() {
         let v = vec![JWK_ES512, JWK_ECMR];
         let mut t = TangyLib::init(KeySource::Vector(&v)).unwrap();
-        let advertisment = t.adv(Some(JWK_ECMR_THUMBPRINT.into()));
+        let advertisment = t.adv(Some(JWK_ES512_THUMBPRINT.into())).unwrap();
 
-        println!("{advertisment}");
         #[derive(Deserialize)]
         struct Adv {
             payload: String,
@@ -591,6 +657,6 @@ mod tests {
         let actual_adv: Adv = serde_json::from_str(&advertisment).unwrap();
         let payload_json = base64ct::Base64Unpadded::decode_vec(&actual_adv.payload).unwrap();
         let payload: Payload = serde_json::from_slice(&payload_json).unwrap();
-        assert_eq!(payload.keys.len(), 1);
+        assert_eq!(payload.keys.len(), 2);
     }
 }
