@@ -2,16 +2,13 @@
 name = "tangy-lib"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+license = "MIT OR Apache-2.0"
+authors = ["Martyn P <martyn@datasync.dev>"]
 
 [dependencies]
 jsonwebtoken = "9.3.0"
 p521 = { version = ">=0.13.3", features = ["ecdh", "ecdsa", "jwk"] }
 elliptic-curve = { version = "0.13.8", features = ["jwk"] }
-
-#p521 = { path = "../elliptic-curves/p521", features = ["ecdh", "ecdsa", "jwk"] }
-#elliptic-curve = { path="../traits/elliptic-curve", features = ["jwk"] }
 
 serde_json = "1.0.115"
 serde = "1.0.197"
