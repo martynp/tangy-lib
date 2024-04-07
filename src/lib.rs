@@ -412,21 +412,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tang_dir() {
-        let _t = TangyLib::init(&std::path::Path::new("/var/lib/tang").to_path_buf());
-        //dbg!(&t);
-    }
-
-    #[test]
     fn local_dir() {
-        let _t = TangyLib::init(&std::path::Path::new("./").to_path_buf());
-        //dbg!(&t);
+        let tmp_dir = tempdir::TempDir::new("local_dir_test").unwrap();
+        let _t = TangyLib::init(&tmp_dir.path());
     }
 
     #[test]
     fn adv() {
-        //let t = TangyLib::init(&std::path::Path::new("./").to_path_buf()).unwrap();
-        let _t = TangyLib::init(&std::path::Path::new("/var/lib/tang").to_path_buf()).unwrap();
-        //dbg!(t.adv());
+        let mut t = TangyLib::init(&std::path::Path::new("/var/lib/tang").to_path_buf()).unwrap();
+        dbg!(t.adv());
     }
 }
