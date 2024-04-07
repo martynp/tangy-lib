@@ -37,7 +37,6 @@ impl TangyLib {
         }
 
         if !ecmr_exists && !es512_exists {
-            //let es512_jwk = create_new_jwk("ES512", &["sign", "verify"]);
             let es512_jwk = create_new_jwk("ES512", &["sign", "verify"]);
             if let Ok(mut file) = std::fs::File::create_new(db_path.join("es512.jwk")) {
                 file.write_all(es512_jwk.as_bytes()).unwrap();
@@ -76,7 +75,7 @@ impl TangyLib {
         })
     }
 
-    pub fn adv(&mut self) -> String {
+    pub fn adv(&mut self /* , kid: Option<&str>*/) -> String {
         #[derive(serde::Serialize)]
         struct Advertise {
             payload: String,
@@ -91,7 +90,19 @@ impl TangyLib {
 
         let payload = base64ct::Base64Url::encode_string(
             serde_json::to_string(&Payload {
-                keys: self.keys.values().map(|v| v.to_public_key()).collect(),
+                keys: self
+                    .keys
+                    .values()
+                    .map(|v| {
+                        let mut k = v.to_public_key();
+                        let mut ops = k.key_ops.take();
+                        if ops.is_some() {
+                            ops.as_mut().unwrap().retain(|v| *v != "sign");
+                        }
+                        k.key_ops = ops;
+                        k
+                    })
+                    .collect(),
             })
             .unwrap()
             .as_bytes(),
