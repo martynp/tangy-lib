@@ -18,14 +18,23 @@ pub struct TangyLib {
     signing_key: MyJwkEcKey,
 }
 
-impl TangyLib {
-    pub fn init(db_path: &Path) -> Result<Self, std::io::Error> {
-        let mut keys = load_files_from_db(db_path)?;
+#[derive(PartialEq)]
+pub enum KeySource<'a> {
+    LocalDir(&'a Path),
+    Vector(&'a Vec<&'a str>),
+}
 
-        let ecmr_exists = keys
+impl TangyLib {
+    pub fn init(source: KeySource) -> Result<Self, std::io::Error> {
+        let mut loaded_keys = match source {
+            KeySource::LocalDir(dir) => load_keys_from_dir(dir)?,
+            KeySource::Vector(keys) => load_keys_from_vec(keys)?,
+        };
+
+        let ecmr_exists = loaded_keys
             .iter()
             .any(|(_, v)| v.alg.is_some() && v.alg.as_ref().unwrap() == "ECMR");
-        let es512_exists = keys
+        let es512_exists = loaded_keys
             .iter()
             .any(|(_, v)| v.alg.is_some() && v.alg.as_ref().unwrap() == "ES512");
 
@@ -37,23 +46,33 @@ impl TangyLib {
         }
 
         if !ecmr_exists && !es512_exists {
-            let es512_jwk = create_new_jwk("ES512", &["sign", "verify"]);
-            if let Ok(mut file) = std::fs::File::create_new(db_path.join("es512.jwk")) {
-                file.write_all(es512_jwk.as_bytes()).unwrap();
+            match source {
+                KeySource::LocalDir(dir) => {
+                    let keys = create_new_key_set();
+                    keys.iter().for_each(|k| {
+                        let jwk: MyJwkEcKey = serde_json::from_str(k).unwrap();
+                        let thumbprint = jwk.thumbprint();
+                        if let Ok(mut file) =
+                            std::fs::File::create_new(dir.join(format!("{}.jwk", thumbprint)))
+                        {
+                            file.write_all(k.as_bytes()).unwrap();
+                        }
+                        loaded_keys.insert(thumbprint, jwk);
+                    });
+                }
+                KeySource::Vector(_) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "ES512 and ECMR keys not present in input vector",
+                    ));
+                }
             }
-
-            let ecmr_jwk = create_new_jwk("ECMR", &["deriveKey"]);
-            if let Ok(mut file) = std::fs::File::create_new(db_path.join("ecmr.jwk")) {
-                file.write_all(ecmr_jwk.as_bytes()).unwrap();
-            }
-
-            keys.extend(load_files_from_db(db_path)?);
         }
 
         // Extract a signing key from the JWK, it shouldn't really be generated using a
         // from_bytes call from the secret key... perhaps the SigningKey From trait is
         // missing for the secret key.
-        let signing_key = keys.iter().find_map(|(_, v)| {
+        let signing_key = loaded_keys.iter().find_map(|(_, v)| {
             if let Some(alg) = v.alg.as_ref() {
                 if alg == "ES512" {
                     return Some(v.clone());
@@ -70,12 +89,12 @@ impl TangyLib {
         }
 
         Ok(Self {
-            keys,
+            keys: loaded_keys,
             signing_key: signing_key.unwrap(),
         })
     }
 
-    pub fn adv(&mut self /* , kid: Option<&str>*/) -> String {
+    pub fn adv(&mut self, kid: Option<&str>) -> String {
         #[derive(serde::Serialize)]
         struct Advertise {
             payload: String,
@@ -88,16 +107,26 @@ impl TangyLib {
             keys: Vec<MyJwkEcKey>,
         }
 
+        let keys = if let Some(kid) = kid {
+            let key = self.keys.get(kid);
+            if key.is_none() {
+                Vec::new()
+            } else {
+                vec![key.unwrap()]
+            }
+        } else {
+            self.keys.values().collect()
+        };
+
         let payload = base64ct::Base64Url::encode_string(
             serde_json::to_string(&Payload {
-                keys: self
-                    .keys
-                    .values()
+                keys: keys
+                    .iter()
                     .map(|v| {
                         let mut k = v.to_public_key();
                         let mut ops = k.key_ops.take();
-                        if ops.is_some() {
-                            ops.as_mut().unwrap().retain(|v| *v != "sign");
+                        if let Some(ops) = &mut ops {
+                            ops.retain(|v| *v != "sign");
                         }
                         k.key_ops = ops;
                         k
@@ -169,13 +198,17 @@ impl TangyLib {
             request_key.as_affine(),
         );
 
-        dbg!(&p);
-
         Ok(serde_json::to_string(&p).unwrap())
     }
 }
 
-fn load_files_from_db(db_path: &Path) -> Result<HashMap<String, MyJwkEcKey>, std::io::Error> {
+pub fn create_new_key_set() -> Vec<String> {
+    let es512_jwk = create_new_jwk("ES512", &["sign", "verify"]);
+    let ecmr_jwk = create_new_jwk("ECMR", &["deriveKey"]);
+    vec![es512_jwk, ecmr_jwk]
+}
+
+fn load_keys_from_dir(db_path: &Path) -> Result<HashMap<String, MyJwkEcKey>, std::io::Error> {
     if !db_path.exists() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
@@ -203,7 +236,7 @@ fn load_files_from_db(db_path: &Path) -> Result<HashMap<String, MyJwkEcKey>, std
         .filter(|f| f.extension() == Some(std::ffi::OsStr::new("jwk")))
         .collect();
 
-    Ok(jwk_files
+    let keys: Vec<String> = jwk_files
         .iter()
         .filter_map(|j| {
             let mut file_content = String::new();
@@ -215,8 +248,20 @@ fn load_files_from_db(db_path: &Path) -> Result<HashMap<String, MyJwkEcKey>, std
                 }
                 Err(_) => return None,
             };
+            Some(file_content)
+        })
+        .collect();
 
-            let jwk: MyJwkEcKey = if let Ok(jwk) = serde_json::from_str(&file_content) {
+    load_keys_from_vec(&keys)
+}
+
+fn load_keys_from_vec<T: AsRef<str>>(
+    keys: &[T],
+) -> Result<HashMap<String, MyJwkEcKey>, std::io::Error> {
+    Ok(keys
+        .iter()
+        .filter_map(|key| {
+            let jwk: MyJwkEcKey = if let Ok(jwk) = serde_json::from_str(key.as_ref()) {
                 jwk
             } else {
                 return None;
@@ -416,21 +461,136 @@ impl MyJwkEcKey {
         ret.d = None;
         ret
     }
+
+    pub fn thumbprint(&self) -> String {
+        // For EC type the following fields are required to be
+        // present and in lexicographic order
+        #[derive(Serialize)]
+        struct Required {
+            crv: String,
+            kty: String,
+            x: String,
+            y: String,
+        }
+
+        let required_fields = Required {
+            crv: self.crv.to_owned(),
+            kty: self.kty.to_owned(),
+            x: self.x.to_owned(),
+            y: self.y.to_owned(),
+        };
+
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(serde_json::to_string(&required_fields).unwrap().as_bytes());
+        base64ct::Base64UrlUnpadded::encode_string(&hasher.finalize())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde::Deserialize;
+
+    const JWK_ES512: &str = r#"
+        {
+            "kty": "EC",
+            "alg": "ES512",
+            "crv": "P-521",
+            "x": "AX5mUTAH1qr3YSSwuMV_HV0yupJhMIAqwly710a7qLbXR6up3flnaPsJbaSVATrIF6QcXc9PPyFW1IQHmDOWGSPj",
+            "y": "ADT1K8Q-O1Q5lyU3StXnPMQwgnYWS8hnTRGjjcFssitZy_tUWSuhUPFhzaUJKhXRNbcyELeDX-kPCMbBKX1vb8Lq",
+            "d": "AbDO5xCtQHUbHld-Fq61sSCvyjr9EpNj3_sklNmo54xmKeYu_cW_s7fzQxm6SsqFwrTmiiFz2OaD1ODsXI-DdoKt",
+            "key_ops": ["sign","verify"]
+        }
+    "#;
+
+    const JWK_ES512_THUMBPRINT: &str = "tpUdnaei02Z6bSS3_rKEU0BDPl8tyZFy16CKCTWNlbA";
+
+    const JWK_ECMR: &str = r#"
+        {
+            "kty": "EC",
+            "alg": "ECMR",
+            "crv": "P-521",
+            "x": "ASa1DOpfB9-Qe1zkbG6HAZ_DC2FNUBeR6e3kgLgHF8xC8JZM1EsiGjkvTRk0paH_Oat8OSGSRPD0-PsXFAvNuXCd",
+            "y": "AaO_WH8pzC__37gCuCJdgtIbO6IK4XLfyjAjuJovvfksoMigvFwpyLKwWhIfE8lQqPR7CMxG2LRLXJIubFjSDMDH",
+            "d": "AQTm4JamDPZufHlRCC12Ssjh6xTwu630neCLr7EUtUuZoFHk9zga-kzwaGajH1MQb8ffc3CeV-7InHKmR8HvytTE",
+            "key_ops":["deriveKey"]
+        }
+    "#;
+
+    const JWK_ECMR_THUMBPRINT: &str = "UFgqx9-PLx_h6h4hd6sysNHMC6cDyjBQOYZHFvObLbo";
 
     #[test]
-    fn local_dir() {
+    fn source_local_dir() {
         let tmp_dir = tempdir::TempDir::new("local_dir_test").unwrap();
-        let _t = TangyLib::init(&tmp_dir.path());
+        let t = TangyLib::init(KeySource::LocalDir(&tmp_dir.path()));
+        assert!(t.is_ok());
+    }
+
+    #[test]
+    fn source_vector() {
+        let v = vec![JWK_ES512, JWK_ECMR];
+        let t = TangyLib::init(KeySource::Vector(&v));
+        assert!(t.is_ok());
     }
 
     #[test]
     fn adv() {
-        let mut t = TangyLib::init(&std::path::Path::new("/var/lib/tang").to_path_buf()).unwrap();
-        dbg!(t.adv());
+        let v = vec![JWK_ES512, JWK_ECMR];
+        let mut t = TangyLib::init(KeySource::Vector(&v)).unwrap();
+        let advertisment = t.adv(None);
+
+        #[derive(Deserialize)]
+        struct Adv {
+            payload: String,
+        }
+
+        #[derive(Deserialize)]
+        struct Key {
+            kty: String,
+            crv: String,
+            x: String,
+            y: String,
+        }
+
+        #[derive(Deserialize)]
+        struct Payload {
+            keys: Vec<Key>,
+        }
+
+        let actual_adv: Adv = serde_json::from_str(&advertisment).unwrap();
+        let payload_json = base64ct::Base64Unpadded::decode_vec(&actual_adv.payload).unwrap();
+        let payload: Payload = serde_json::from_slice(&payload_json).unwrap();
+        assert_eq!(payload.keys.len(), 2);
+    }
+
+    #[test]
+    fn adv_kid() {
+        let v = vec![JWK_ES512, JWK_ECMR];
+        let mut t = TangyLib::init(KeySource::Vector(&v)).unwrap();
+        let advertisment = t.adv(Some(JWK_ECMR_THUMBPRINT.into()));
+
+        println!("{advertisment}");
+        #[derive(Deserialize)]
+        struct Adv {
+            payload: String,
+        }
+
+        #[derive(Deserialize)]
+        struct Key {
+            kty: String,
+            crv: String,
+            x: String,
+            y: String,
+        }
+
+        #[derive(Deserialize)]
+        struct Payload {
+            keys: Vec<Key>,
+        }
+
+        let actual_adv: Adv = serde_json::from_str(&advertisment).unwrap();
+        let payload_json = base64ct::Base64Unpadded::decode_vec(&actual_adv.payload).unwrap();
+        let payload: Payload = serde_json::from_slice(&payload_json).unwrap();
+        assert_eq!(payload.keys.len(), 1);
     }
 }
