@@ -54,7 +54,7 @@ impl TangyLib {
                         let jwk: MyJwkEcKey = serde_json::from_str(k).unwrap();
                         let thumbprint = jwk.thumbprint();
                         if let Ok(mut file) =
-                            std::fs::File::create_new(dir.join(format!("{}.jwk", thumbprint)))
+                            std::fs::File::create(dir.join(format!("{}.jwk", thumbprint)))
                         {
                             file.write_all(k.as_bytes()).unwrap();
                         }
