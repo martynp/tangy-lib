@@ -1,0 +1,45 @@
+name: Build and Run
+
+on: 
+  push
+
+jobs:
+  rust-stable:
+    runs-on: ubuntu-latest
+    
+    steps:
+    
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Build & Test
+      run: |
+        cargo build --release
+        cargo test
+
+  rust-stable-windows:
+    runs-on: windows-latest
+    
+    steps:
+    
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+
+    - name: Build & Test
+      run: |
+        cargo build --release
+        cargo test
+
+
+  rust-msrv:
+    runs-on: ubuntu-latest
+    
+    steps:
+    
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@1.73.0
+
+    - name: Build & Test
+      run: |
+        cargo build --release
+        cargo test
