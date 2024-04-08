@@ -1,10 +1,12 @@
 [package]
 name = "tangy-lib"
 description = "Tang protocol library implementation"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Martyn P <martyn@datasync.dev>"]
+repository = "https://github.com/martynp/tangy-lib"
+readme = "readme.md"
 
 [dependencies]
 p521 = { version = ">=0.13.3", features = ["ecdh", "ecdsa", "jwk"] }
