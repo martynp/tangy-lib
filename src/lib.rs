@@ -97,7 +97,7 @@ impl TangyLib {
         })
     }
 
-    pub fn adv(&mut self, skid: Option<&str>) -> Result<String, std::io::Error> {
+    pub fn adv(&self, skid: Option<&str>) -> Result<String, std::io::Error> {
         #[derive(serde::Serialize)]
         struct Siguature {
             protected: String,

@@ -598,7 +598,7 @@ dependencies = [
 
 [[package]]
 name = "tangy-lib"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64ct",
  "elliptic-curve",
