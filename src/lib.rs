@@ -16,6 +16,7 @@ use sha2::Digest;
 pub struct TangyLib {
     keys: std::collections::HashMap<String, MyJwkEcKey>,
     signing_keys: Vec<MyJwkEcKey>,
+    default_adv: String,
 }
 
 #[derive(PartialEq)]
@@ -91,13 +92,25 @@ impl TangyLib {
             ));
         }
 
-        Ok(Self {
+        let mut tangy = Self {
             keys: loaded_keys,
-            signing_keys: signing_keys,
-        })
+            signing_keys,
+            default_adv: "".into(),
+        };
+
+        tangy.default_adv = tangy.adv_internal(None).unwrap();
+
+        Ok(tangy)
     }
 
     pub fn adv(&self, skid: Option<&str>) -> Result<String, std::io::Error> {
+        if skid.is_none() {
+            return Ok(self.default_adv.to_owned());
+        }
+        self.adv_internal(skid)
+    }
+
+    pub fn adv_internal(&self, skid: Option<&str>) -> Result<String, std::io::Error> {
         #[derive(serde::Serialize)]
         struct Siguature {
             protected: String,
@@ -150,7 +163,7 @@ impl TangyLib {
             }
             vec![key.unwrap().clone()]
         } else {
-            self.signing_keys.iter().map(|v| v.clone()).collect()
+            self.signing_keys.to_vec()
         };
 
         let payload = base64ct::Base64Url::encode_string(
@@ -340,6 +353,27 @@ fn load_keys_from_vec<T: AsRef<str>>(
         })
         .collect())
 }
+
+// For future directory monitoring
+//fn scan_folder(dir: &Path) -> String {
+//    let mut sha256 = sha2::Sha256::new();
+//    dir.read_dir()
+//        .unwrap()
+//        .filter_map(|f| f.ok())
+//        .map(|e| e.path())
+//        .filter(|f| f.extension() == Some(std::ffi::OsStr::new("jwk")))
+//        .for_each(|filename| {
+//            let mut file = std::fs::File::open(&filename).unwrap();
+//            let filesize = filesize::file_real_size(&filename).unwrap_or(1024 * 10);
+//            if filesize < 1024 * 10 {
+//                let mut content = String::new();
+//                file.read_to_string(&mut content).unwrap();
+//                sha256.update(content.as_bytes());
+//            }
+//        });
+//
+//    base64ct::Base64UrlUnpadded::encode_string(&sha256.finalize())
+//}
 
 fn create_new_jwk(alg: &str, key_ops: &[&str]) -> String {
     let priv_key = elliptic_curve::SecretKey::<p521::NistP521>::random(&mut OsRng);
