@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{Read, Write},
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -308,6 +307,7 @@ pub fn create_new_key_set() -> Vec<String> {
 
 #[cfg(target_os = "linux")]
 fn set_file_permissions(file: &File) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
     let mut perms = file.metadata()?.permissions();
     perms.set_mode(0o440); // Set read only, and access for owner only
     file.set_permissions(perms)
@@ -654,7 +654,6 @@ mod tests {
     fn source_local_dir() {
         let tmp_dir = tempdir::TempDir::new("local_dir_test").unwrap();
         let t = TangyLib::init(KeySource::LocalDir(&tmp_dir.path()));
-        std::thread::sleep(std::time::Duration::from_secs(20));
         assert!(t.is_ok());
     }
 
