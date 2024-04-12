@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fs::File,
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -63,9 +64,7 @@ impl TangyLib {
                             std::fs::File::create(dir.join(format!("{}.jwk", thumbprint)))
                         {
                             file.write_all(k.as_bytes())?;
-                            let mut perms = file.metadata()?.permissions();
-                            perms.set_mode(0o440); // Set read only, and access for owner only
-                            file.set_permissions(perms)?;
+                            set_file_permissions(&file)?;
                         }
                         loaded_keys.insert(thumbprint, jwk);
                     }
@@ -305,6 +304,18 @@ pub fn create_new_key_set() -> Vec<String> {
     let es512_jwk = create_new_jwk("ES512", &["sign", "verify"]);
     let ecmr_jwk = create_new_jwk("ECMR", &["deriveKey"]);
     vec![es512_jwk, ecmr_jwk]
+}
+
+#[cfg(target_os = "linux")]
+fn set_file_permissions(file: &File) -> Result<(), std::io::Error> {
+    let mut perms = file.metadata()?.permissions();
+    perms.set_mode(0o440); // Set read only, and access for owner only
+    file.set_permissions(perms)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_file_permissions(file: &File) -> Result<(), std::io::Error> {
+    Ok(())
 }
 
 fn load_keys_from_dir(db_path: &Path) -> Result<HashMap<String, MyJwkEcKey>, std::io::Error> {
