@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{Read, Write},
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -50,16 +51,24 @@ impl TangyLib {
             match source {
                 KeySource::LocalDir(dir) => {
                     let keys = create_new_key_set();
-                    keys.iter().for_each(|k| {
-                        let jwk: MyJwkEcKey = serde_json::from_str(k).unwrap();
+                    for k in keys.iter() {
+                        let jwk: MyJwkEcKey = serde_json::from_str(k).map_err(|e| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("Unable to create new JWK: {e}"),
+                            )
+                        })?;
                         let thumbprint = jwk.thumbprint();
                         if let Ok(mut file) =
                             std::fs::File::create(dir.join(format!("{}.jwk", thumbprint)))
                         {
-                            file.write_all(k.as_bytes()).unwrap();
+                            file.write_all(k.as_bytes())?;
+                            let mut perms = file.metadata()?.permissions();
+                            perms.set_mode(0o440); // Set read only, and access for owner only
+                            file.set_permissions(perms)?;
                         }
                         loaded_keys.insert(thumbprint, jwk);
-                    });
+                    }
                 }
                 KeySource::Vector(_) => {
                     return Err(std::io::Error::new(
@@ -98,7 +107,7 @@ impl TangyLib {
             default_adv: "".into(),
         };
 
-        tangy.default_adv = tangy.adv_internal(None).unwrap();
+        tangy.default_adv = tangy.adv_internal(None)?;
 
         Ok(tangy)
     }
@@ -181,7 +190,12 @@ impl TangyLib {
                     })
                     .collect(),
             })
-            .unwrap()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Unable to encode adv message: {e}"),
+                )
+            })?
             .as_bytes(),
         );
 
@@ -220,7 +234,12 @@ impl TangyLib {
                 protected: Some(protected),
                 signature: Some(
                     base64ct::Base64Url::encode(&signatures[0].to_bytes(), &mut buf)
-                        .unwrap()
+                        .map_err(|e| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!("Unable to encode string to base64: {e}"),
+                            )
+                        })?
                         .to_string(),
                 ),
                 signatures: None,
@@ -624,6 +643,7 @@ mod tests {
     fn source_local_dir() {
         let tmp_dir = tempdir::TempDir::new("local_dir_test").unwrap();
         let t = TangyLib::init(KeySource::LocalDir(&tmp_dir.path()));
+        std::thread::sleep(std::time::Duration::from_secs(20));
         assert!(t.is_ok());
     }
 
