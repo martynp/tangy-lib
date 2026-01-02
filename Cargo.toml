@@ -1,7 +1,7 @@
 [package]
 name = "tangy-lib"
 description = "Tang protocol library implementation"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Martyn P <martyn@datasync.dev>"]
@@ -14,8 +14,8 @@ elliptic-curve = { version = "0.13.8", features = ["jwk"] }
 
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-base64ct = "1.7"
+base64ct = "1.8"
 sha2 = "0.10"
 
 [dev-dependencies]
-tempdir = "0.3.7"
+tempfile = "3"

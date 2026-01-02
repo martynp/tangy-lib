@@ -652,8 +652,8 @@ mod tests {
 
     #[test]
     fn source_local_dir() {
-        let tmp_dir = tempdir::TempDir::new("local_dir_test").unwrap();
-        let t = TangyLib::init(KeySource::LocalDir(&tmp_dir.path()));
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let t = TangyLib::init(KeySource::LocalDir(tmp_dir.path()));
         assert!(t.is_ok());
     }
 
